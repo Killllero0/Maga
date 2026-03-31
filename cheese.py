@@ -105,10 +105,12 @@ def calculate_sphere_radii(extrema_coords, noise_map, shape, max_radius=8, overl
 
 
 def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0, 
-                             perlin_scale=30.0, max_radius_voxels=8, overlap_factor=0.15):
+                             perlin_scale=30.0, max_radius_voxels=8, overlap_factor=0.15,
+                             fill_threshold=0.4):
     """
     Создаёт куб с внутренними сферами на основе шума Перлина.
     Учитывает требования 3D печати (опоры для висящих частей).
+    fill_threshold: порог заполнения материалом (0.3-0.4 = 30-40% материала, 60-70% пустоты)
     """
     wall_thickness_vox = int(wall_thickness_mm / voxel_size)
     
@@ -116,9 +118,12 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
     print("📊 Генерация шума Перлина...")
     noise_map = generate_perlin_noise_3d(shape, scale=perlin_scale)
     
-    # Находим локальные экстремумы (максимумы и минимумы)
+    # Нормализуем шум
+    noise_norm = (noise_map - noise_map.min()) / (noise_map.max() - noise_map.min())
+    
+    # Находим локальные экстремумы (максимумы и минимумы) для центров сфер
     print("🔍 Поиск локальных экстремумов (максимумы и минимумы)...")
-    extrema_coords, noise_norm = find_local_extrema_3d(noise_map, threshold=0.3, min_distance=1, max_candidates=10000)
+    extrema_coords, _ = find_local_extrema_3d(noise_map, threshold=0.3, min_distance=3, max_candidates=500)
     
     print(f"   Найдено {len(extrema_coords)} локальных экстремумов")
     
@@ -145,7 +150,12 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
                  wall_thickness_vox:-wall_thickness_vox,
                  wall_thickness_vox:-wall_thickness_vox] = True
     
-    # Вырезаем сферы
+    # Создаём волны заполнения на основе шума Перлина
+    # Где шум выше порога - материал, ниже - пустота
+    print(f"🌊 Создание волн заполнения (порог {fill_threshold})...")
+    wave_mask = noise_norm > fill_threshold
+    
+    # Вырезаем сферы из материала
     print("🔮 Генерация сфер...")
     sphere_mask = np.zeros(shape, dtype=bool)
     
@@ -166,8 +176,17 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
         
         sphere_mask = sphere_mask | sphere_shell
     
-    # Вырезаем полые сферы из материала
-    mask = mask & ~sphere_mask
+    # Комбинируем: материал = стенки + (волны заполнения & ~сферы)
+    # Сферы вырезаются из волн заполнения
+    inner_material = wave_mask & inner_region & ~sphere_mask
+    
+    # Итоговая маска: внешние стенки + внутренний материал
+    mask = (~mask if wall_thickness_vox > 0 else np.ones(shape, dtype=bool))
+    mask[wall_thickness_vox:-wall_thickness_vox,
+         wall_thickness_vox:-wall_thickness_vox,
+         wall_thickness_vox:-wall_thickness_vox] = inner_material[wall_thickness_vox:-wall_thickness_vox,
+                                                                   wall_thickness_vox:-wall_thickness_vox,
+                                                                   wall_thickness_vox:-wall_thickness_vox]
     
     # Добавляем опоры для 3D печати (Z-axis printing)
     print("🏗️  Генерация опор для 3D печати...")
@@ -254,19 +273,22 @@ def main():
     print("🔧 Генерация 3D-модели: куб со сферами на основе шума Перлина\n")
     
     # Базовые параметры
-    resolution = (100, 100, 100)  # Размер куба в вокселях (увеличено)
+    resolution = (100, 100, 100)  # Размер куба в вокселях
     voxel_size = 0.5  # мм
-    wall_thickness_mm = 1.0  # мм (минимум для 3D печати)
+    wall_thickness_mm = 1.5  # мм (минимум для 3D печати)
     
     # Параметры шума Перлина
-    perlin_scale = 5.0  # Частота шума (меньше = чаще экстремумы)
+    perlin_scale = 15.0  # Частота шума (для волн заполнения)
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
     
     # Параметры сфер
-    max_radius_voxels = 4  # Уменьшен для более частых сфер
-    overlap_factor = 0.08  # 8% перекрытие сфер (меньше для раздельных сфер)
+    max_radius_voxels = 12  # Увеличен для больших сфер
+    overlap_factor = 0.35   # 35% перекрытие для сильного пересечения
+    
+    # Заполнение тела (30-40% материала, 60-70% пустоты)
+    fill_threshold = 0.38   # Порог заполнения по шуму Перлина
     
     print(f"📐 Параметры:")
     print(f"   Разрешение: {resolution} вокселей")
@@ -274,7 +296,8 @@ def main():
     print(f"   Толщина стенок: {wall_thickness_mm} мм")
     print(f"   Scale шума: {perlin_scale}")
     print(f"   Макс. радиус сфер: {max_radius_voxels * voxel_size} мм")
-    print(f"   Перекрытие сфер: {overlap_factor * 100}%\n")
+    print(f"   Перекрытие сфер: {overlap_factor * 100}%")
+    print(f"   Порог заполнения: {fill_threshold} (пустота ~{100 - fill_threshold*100:.0f}%)\n")
     
     # Генерация
     mask, extrema_coords, radii = create_cube_with_spheres(
@@ -283,7 +306,8 @@ def main():
         wall_thickness_mm=wall_thickness_mm,
         perlin_scale=perlin_scale,
         max_radius_voxels=max_radius_voxels,
-        overlap_factor=overlap_factor
+        overlap_factor=overlap_factor,
+        fill_threshold=fill_threshold
     )
     
     # Конвертация в меш
