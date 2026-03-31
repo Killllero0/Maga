@@ -2,6 +2,8 @@ import numpy as np
 import noise
 import trimesh
 from scipy import ndimage
+from datetime import datetime
+import os
 
 
 def generate_perlin_noise_3d(shape, scale=50.0, octaves=6, persistence=0.5, lacunarity=2.0, base=0):
@@ -383,8 +385,11 @@ def main():
     print(f"📏 Размеры: {mesh.extents}")
     
     # Сохранение
-    mesh.export("cheese_structure.stl")
-    print("\n💾 Файл сохранён: cheese_structure.stl")
+    # Генерация имени файла по времени: example_YYYYMMDD_HHMMSS.stl
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = f"example_{timestamp}.stl"
+    mesh.export(output_filename)
+    print(f"\n💾 Файл сохранён: {output_filename}")
 
 
 if __name__ == "__main__":
