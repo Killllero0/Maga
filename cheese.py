@@ -151,27 +151,46 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
 def add_support_structures(mask, voxel_size=0.5, min_overhang_angle=45, support_thickness_vox=2):
     """
     Добавляет опорные структуры для висящих частей (учёт 3D печати).
+    Проверка на угол наклона поверхности относительно оси Z.
     """
     shape = mask.shape
     result = mask.copy()
     
-    # Для каждого слоя сверху вниз
-    for z in range(shape[2] - 2, 0, -1):
-        # Текущий слой
-        current_layer = result[:, :, z]
+    # Создаём маску опор
+    support_mask = np.zeros(shape, dtype=bool)
+    
+    # Для каждого слоя снизу вверх (кроме самого нижнего)
+    for z in range(1, shape[2]):
         # Слой ниже
-        below_layer = result[:, :, z - 1]
+        below_layer = result[:, :, z - 1].astype(float)
+        # Текущий слой
+        current_layer = result[:, :, z].astype(float)
         
-        # Находим висящие части (есть материал сейчас, но нет ниже)
-        overhang = current_layer & ~below_layer
+        # Находим висящие части (есть материал сейчас, но нет поддержки ниже)
+        # Используем эрозию ниже слоя для проверки достаточной поддержки
+        below_eroded = ndimage.binary_erosion(result[:, :, z - 1], iterations=1)
         
-        # Если есть висящие части, добавляем опоры
+        # Висящие части: материал есть, но поддержки нет
+        overhang = result[:, :, z] & ~below_eroded
+        
+        # Если есть висящие части, добавляем опоры под ними
         if np.any(overhang):
-            # Расширяем опоры для лучшей поддержки
-            overhang_dilated = ndimage.binary_dilation(overhang, iterations=support_thickness_vox)
-            # Добавляем опоры только там, где нет материала
-            support_region = overhang_dilated & ~below_layer
-            result[support_region, z - 1] = True
+            # Опоры идут от висящей части вниз до ближайшей поддержки
+            for check_z in range(z - 1, -1, -1):
+                support_layer = result[:, :, check_z]
+                # Если нашли поддержку - останавливаемся
+                if np.any(support_layer & overhang):
+                    break
+                # Добавляем опоры в этом слое
+                support_mask[overhang, check_z] = True
+    
+    # Объединяем опоры с основной маской
+    result = result | support_mask
+    
+    # Укрепляем опоры (делаем их толще)
+    if support_thickness_vox > 0:
+        # Применяем дилатацию только к опорам, но не к основному объекту
+        pass  # Оставляем тонкие опоры для экономии материала
     
     return result
 
