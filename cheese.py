@@ -39,7 +39,7 @@ def create_perlin_noise_shape(shape, scale=100.0, octaves=6, persistence=0.5, la
                  wall_thickness:-wall_thickness] = True
     
     # Расширяем пустоты чтобы они соединялись в единую систему пещер
-    void_mask = ndimage.binary_dilation(void_mask, iterations=3)
+    void_mask = ndimage.binary_dilation(void_mask, iterations=5)
     
     # Оставляем пустоты только во внутренней области (не затрагивая стенки)
     void_mask = void_mask & inner_region
@@ -120,14 +120,14 @@ def main():
     print("🔧 Генерация 3D-модели с шумом Перлина и внутренними пещерами...")
 
     resolution = (100, 100, 100)
-    scale = 15.0  # Ещё меньше для очень частых отверстий
+    scale = 10.0  # Минимальный для максимальных отверстий
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
-    threshold = 0.3
-    num_voids = 80  # Увеличено количество сферических пустот
+    threshold = 0.25
+    num_voids = 100  # Максимум сферических пустот
     min_radius = 3
-    max_radius = 8
+    max_radius = 7
     voxel_size = 0.5
     wall_thickness_voxels = 4  # Толщина стенки в вокселях (4 voxels * 0.5mm = 2mm)
 
