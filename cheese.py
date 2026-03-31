@@ -259,7 +259,7 @@ def main():
     wall_thickness_mm = 1.0  # мм (минимум для 3D печати)
     
     # Параметры шума Перлина
-    perlin_scale = 8.0  # Частота шума (меньше = чаще экстремумы)
+    perlin_scale = 5.0  # Частота шума (меньше = чаще экстремумы)
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
