@@ -120,11 +120,11 @@ def main():
     print("🔧 Генерация 3D-модели с шумом Перлина и внутренними пещерами...")
 
     resolution = (100, 100, 100)
-    scale = 50.0
+    scale = 25.0  # Уменьшен для более частых отверстий
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
-    threshold = 0.4  # Порог для создания пещер
+    threshold = 0.35  # Сlightly lowered
     num_voids = 60
     min_radius = 4
     max_radius = 10
