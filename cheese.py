@@ -127,18 +127,24 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
     print("🔮 Генерация сфер...")
     sphere_mask = np.zeros(shape, dtype=bool)
     
+    # Толщина стенок сферы (в вокселях)
+    sphere_wall_thickness = 2  # ~1 мм
+    
     for i, (center, radius) in enumerate(zip(maxima_coords, radii)):
         x, y, z = center
         xx, yy, zz = np.ogrid[:shape[0], :shape[1], :shape[2]]
         dist = np.sqrt((xx - x)**2 + (yy - y)**2 + (zz - z)**2)
-        sphere = dist <= radius
+        
+        # Создаём полую сферу (только оболочка)
+        inner_radius = max(radius - sphere_wall_thickness, 1)
+        sphere_shell = (dist <= radius) & (dist > inner_radius)
         
         # Обрезаем сферу по внешней стенке
-        sphere = sphere & inner_region
+        sphere_shell = sphere_shell & inner_region
         
-        sphere_mask = sphere_mask | sphere
+        sphere_mask = sphere_mask | sphere_shell
     
-    # Вырезаем сферы из материала
+    # Вырезаем полые сферы из материала
     mask = mask & ~sphere_mask
     
     # Добавляем опоры для 3D печати (Z-axis printing)
@@ -231,14 +237,14 @@ def main():
     wall_thickness_mm = 1.0  # мм (минимум для 3D печати)
     
     # Параметры шума Перлина
-    perlin_scale = 30.0  # Частота шума (меньше = чаще максимумы)
+    perlin_scale = 12.0  # Частота шума (меньше = чаще максимумы)
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
     
     # Параметры сфер
-    max_radius_voxels = 8
-    overlap_factor = 0.15  # 15% перекрытие сфер
+    max_radius_voxels = 5  # Уменьшен для более частых сфер
+    overlap_factor = 0.10  # 10% перекрытие сфер (меньше для раздельных сфер)
     
     print(f"📐 Параметры:")
     print(f"   Разрешение: {resolution} вокселей")
