@@ -3,9 +3,9 @@ import noise
 import trimesh
 from scipy import ndimage
 
-def create_perlin_noise_shape(shape, scale=100.0, octaves=6, persistence=0.5, lacunarity=2.0, threshold=0.3):
+def create_perlin_noise_shape(shape, scale=100.0, octaves=6, persistence=0.5, lacunarity=2.0, threshold=0.3, wall_thickness=4):
     """
-    Создаёт 3D-маску на основе шума Перлина.
+    Создаёт 3D-маску с внешними стенками и внутренними пещерами на основе шума Перлина.
     """
     noise_map = np.zeros(shape)
     for x in range(shape[0]):
@@ -25,27 +25,61 @@ def create_perlin_noise_shape(shape, scale=100.0, octaves=6, persistence=0.5, la
                 )
                 noise_map[x, y, z] = noise_value
 
-    mask = noise_map > threshold
+    # Нормализуем шум в диапазон [-1, 1] -> [0, 1]
+    noise_normalized = (noise_map - noise_map.min()) / (noise_map.max() - noise_map.min())
+    
+    # Создаём маску пустот на основе шума Перлина (пещеры)
+    void_mask = noise_normalized > threshold
+    
+    # Создаём внешнюю оболочку (стенки)
+    # Внутренняя область где можно создавать пустоты
+    inner_region = np.zeros(shape, dtype=bool)
+    inner_region[wall_thickness:-wall_thickness, 
+                 wall_thickness:-wall_thickness, 
+                 wall_thickness:-wall_thickness] = True
+    
+    # Расширяем пустоты чтобы они соединялись в единую систему пещер
+    void_mask = ndimage.binary_dilation(void_mask, iterations=3)
+    
+    # Оставляем пустоты только во внутренней области (не затрагивая стенки)
+    void_mask = void_mask & inner_region
+    
+    # Создаём основное тело - сплошное
+    mask = np.ones(shape, dtype=bool)
+    
+    # Вырезаем пещеры из тела
+    mask = mask & ~void_mask
+    
     return mask
 
-def create_spherical_voids(mask, num_voids=50, min_radius=3, max_radius=8):
+def create_spherical_voids(mask, num_voids=50, min_radius=3, max_radius=8, wall_thickness=4):
     """
-    Добавляет сферические пустоты в маску.
+    Добавляет дополнительные сферические пустоты внутри тела, не затрагивая внешние стенки.
     """
     shape = mask.shape
     result = mask.copy()
     np.random.seed(42)
 
+    # Внутренняя область (где можно создавать пустоты)
+    inner_mask = np.zeros(shape, dtype=bool)
+    inner_mask[wall_thickness:-wall_thickness, 
+               wall_thickness:-wall_thickness, 
+               wall_thickness:-wall_thickness] = True
+
     for _ in range(num_voids):
         radius = np.random.randint(min_radius, max_radius + 1)
-        x = np.random.randint(radius, shape[0] - radius)
-        y = np.random.randint(radius, shape[1] - radius)
-        z = np.random.randint(radius, shape[2] - radius)
+        # Центрируем пустоты внутри тела с отступом от краёв
+        margin = wall_thickness + radius
+        x = np.random.randint(margin, shape[0] - margin)
+        y = np.random.randint(margin, shape[1] - margin)
+        z = np.random.randint(margin, shape[2] - margin)
 
         xx, yy, zz = np.ogrid[:shape[0], :shape[1], :shape[2]]
         dist = np.sqrt((xx - x)**2 + (yy - y)**2 + (zz - z)**2)
         sphere = dist <= radius
-        result[sphere] = False
+        
+        # Вырезаем сферу только если она внутри внутренней области
+        result[sphere & inner_mask] = False
 
     return result
 
@@ -57,6 +91,11 @@ def mask_to_mesh(mask, voxel_size=1.0):
     vertices, faces, normals, values = measure.marching_cubes(mask.astype(float), level=0.5)
     vertices *= voxel_size
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    
+    # Исправляем ориентацию нормалей (объём должен быть положительным)
+    if mesh.volume < 0:
+        mesh.invert()
+    
     return mesh
 
 def cleanup_mesh(mesh):
@@ -65,36 +104,40 @@ def cleanup_mesh(mesh):
     """
     # Объединяем близкие вершины
     mesh.merge_vertices()
-    
+
     # Удаляем вырожденные грани
-    mesh.remove_degenerate_faces()
-    
+    mesh.update_faces(mesh.nondegenerate_faces())
+
     # Удаляем бесконечные значения
     mesh.remove_infinite_values()
-    
-    # Удаляем непрочные грани
-    if hasattr(mesh, 'remove_unreferenced_vertices'):
-        mesh.remove_unreferenced_vertices()
-    
+
+    # Удаляем вершины без граней
+    mesh.remove_unreferenced_vertices()
+
     return mesh
 
 def main():
-    print("🔧 Генерация 3D-модели с шумом Перлина и сферическими пустотами...")
+    print("🔧 Генерация 3D-модели с шумом Перлина и внутренними пещерами...")
 
     resolution = (100, 100, 100)
     scale = 50.0
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
-    threshold = 0.2
+    threshold = 0.4  # Порог для создания пещер
     num_voids = 60
     min_radius = 4
     max_radius = 10
     voxel_size = 0.5
+    wall_thickness_voxels = 4  # Толщина стенки в вокселях (4 voxels * 0.5mm = 2mm)
 
-    mask = create_perlin_noise_shape(resolution, scale, octaves, persistence, lacunarity, threshold)
-    mask = create_spherical_voids(mask, num_voids, min_radius, max_radius)
-    mask = ndimage.binary_fill_holes(mask)
+    mask = create_perlin_noise_shape(
+        resolution, scale, octaves, persistence, lacunarity, 
+        threshold, wall_thickness_voxels
+    )
+    mask = create_spherical_voids(mask, num_voids, min_radius, max_radius, wall_thickness_voxels)
+    
+    # Сглаживание пещер
     mask = ndimage.binary_erosion(mask, iterations=1)
 
     mesh = mask_to_mesh(mask, voxel_size)
