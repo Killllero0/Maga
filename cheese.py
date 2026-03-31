@@ -28,11 +28,11 @@ def generate_perlin_noise_3d(shape, scale=50.0, octaves=6, persistence=0.5, lacu
     return noise_map
 
 
-def find_local_maxima_3d(noise_map, threshold=0.5, min_distance=5):
+def find_local_extrema_3d(noise_map, threshold=0.3, min_distance=3, max_candidates=10000):
     """
-    Находит локальные максимумы в 3D карте шума.
+    Находит локальные экстремумы (максимумы и минимумы) в 3D карте шума.
     """
-    from scipy.ndimage import maximum_filter
+    from scipy.ndimage import maximum_filter, minimum_filter
     
     # Нормализуем шум в [0, 1]
     noise_norm = (noise_map - noise_map.min()) / (noise_map.max() - noise_map.min())
@@ -40,36 +40,58 @@ def find_local_maxima_3d(noise_map, threshold=0.5, min_distance=5):
     # Фильтр локальных максимумов
     neighborhood_size = min_distance * 2 + 1
     local_max = maximum_filter(noise_norm, size=neighborhood_size) == noise_norm
+    local_min = minimum_filter(noise_norm, size=neighborhood_size) == noise_norm
     
-    # Применяем порог
-    maxima_mask = local_max & (noise_norm > threshold)
+    # Применяем порог для максимумов (близко к 1) и минимумов (близко к 0)
+    maxima_mask = local_max & (noise_norm > (1 - threshold))
+    minima_mask = local_min & (noise_norm < threshold)
     
-    # Получаем координаты максимумов
+    # Получаем координаты экстремумов
     maxima_coords = np.argwhere(maxima_mask)
+    minima_coords = np.argwhere(minima_mask)
     
-    return maxima_coords, noise_norm
+    # Объединяем максимумы и минимумы
+    all_extrema = np.vstack([maxima_coords, minima_coords]) if len(maxima_coords) > 0 and len(minima_coords) > 0 else maxima_coords if len(maxima_coords) > 0 else minima_coords
+    
+    # Если слишком много кандидатов, отбираем лучшие по значению шума
+    if len(all_extrema) > max_candidates:
+        # Сортируем по "силе" экстремума (отклонение от 0.5)
+        extremum_values = []
+        for coord in all_extrema:
+            val = noise_norm[coord[0], coord[1], coord[2]]
+            strength = abs(val - 0.5)  # Чем дальше от 0.5, тем лучше
+            extremum_values.append(strength)
+        
+        # Выбираем топ-N
+        top_indices = np.argsort(extremum_values)[-max_candidates:]
+        all_extrema = all_extrema[top_indices]
+    
+    return all_extrema, noise_norm
 
 
-def calculate_sphere_radii(maxima_coords, noise_map, shape, max_radius=8, overlap_factor=0.15):
+def calculate_sphere_radii(extrema_coords, noise_map, shape, max_radius=8, overlap_factor=0.15):
     """
     Рассчитывает радиусы сфер так, чтобы они касались соседних с небольшим перекрытием.
+    Для большого количества сфер используем упрощённый алгоритм.
     """
-    if len(maxima_coords) == 0:
+    if len(extrema_coords) == 0:
         return []
     
+    # Для большого количества сфер используем KD-tree для быстрого поиска соседей
+    from scipy.spatial import cKDTree
+    
+    tree = cKDTree(extrema_coords)
     radii = []
     
-    for i, center in enumerate(maxima_coords):
-        # Находим расстояния до всех других центров
-        distances = []
-        for j, other_center in enumerate(maxima_coords):
-            if i != j:
-                dist = np.sqrt(np.sum((center - other_center)**2))
-                distances.append(dist)
+    for i, center in enumerate(extrema_coords):
+        # Находим k ближайших соседей (k=10 для скорости)
+        k = min(10, len(extrema_coords))
+        distances, _ = tree.query(center, k=k+1)  # +1 потому что первый сосед - это сама точка
         
-        if len(distances) > 0:
-            # Минимальное расстояние до соседа
-            min_dist = min(distances)
+        # Пропускаем первую точку (расстояние 0 до самой себя)
+        if len(distances) > 1:
+            # Минимальное расстояние до соседа (пропускаем 0)
+            min_dist = distances[1] if distances[0] == 0 else distances[0]
             # Радиус = половина минимального расстояния * (1 + overlap_factor)
             radius = min_dist / 2.0 * (1 + overlap_factor)
             radius = min(radius, max_radius)  # Ограничиваем максимальный радиус
@@ -94,15 +116,15 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
     print("📊 Генерация шума Перлина...")
     noise_map = generate_perlin_noise_3d(shape, scale=perlin_scale)
     
-    # Находим локальные максимумы
-    print("🔍 Поиск локальных максимумов...")
-    maxima_coords, noise_norm = find_local_maxima_3d(noise_map, threshold=0.4, min_distance=5)
+    # Находим локальные экстремумы (максимумы и минимумы)
+    print("🔍 Поиск локальных экстремумов (максимумы и минимумы)...")
+    extrema_coords, noise_norm = find_local_extrema_3d(noise_map, threshold=0.3, min_distance=1, max_candidates=10000)
     
-    print(f"   Найдено {len(maxima_coords)} локальных максимумов")
+    print(f"   Найдено {len(extrema_coords)} локальных экстремумов")
     
     # Рассчитываем радиусы сфер
     print("📏 Расчёт радиусов сфер...")
-    radii = calculate_sphere_radii(maxima_coords, noise_map, shape, 
+    radii = calculate_sphere_radii(extrema_coords, noise_map, shape, 
                                    max_radius=max_radius_voxels, 
                                    overlap_factor=overlap_factor)
     
@@ -130,7 +152,7 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
     # Толщина стенок сферы (в вокселях)
     sphere_wall_thickness = 2  # ~1 мм
     
-    for i, (center, radius) in enumerate(zip(maxima_coords, radii)):
+    for i, (center, radius) in enumerate(zip(extrema_coords, radii)):
         x, y, z = center
         xx, yy, zz = np.ogrid[:shape[0], :shape[1], :shape[2]]
         dist = np.sqrt((xx - x)**2 + (yy - y)**2 + (zz - z)**2)
@@ -151,7 +173,7 @@ def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0,
     print("🏗️  Генерация опор для 3D печати...")
     mask = add_support_structures(mask, voxel_size)
     
-    return mask, maxima_coords, radii
+    return mask, extrema_coords, radii
 
 
 def add_support_structures(mask, voxel_size=0.5, min_overhang_angle=45, support_thickness_vox=2):
@@ -232,19 +254,19 @@ def main():
     print("🔧 Генерация 3D-модели: куб со сферами на основе шума Перлина\n")
     
     # Базовые параметры
-    resolution = (80, 80, 80)  # Размер куба в вокселях
+    resolution = (100, 100, 100)  # Размер куба в вокселях (увеличено)
     voxel_size = 0.5  # мм
     wall_thickness_mm = 1.0  # мм (минимум для 3D печати)
     
     # Параметры шума Перлина
-    perlin_scale = 12.0  # Частота шума (меньше = чаще максимумы)
+    perlin_scale = 8.0  # Частота шума (меньше = чаще экстремумы)
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
     
     # Параметры сфер
-    max_radius_voxels = 5  # Уменьшен для более частых сфер
-    overlap_factor = 0.10  # 10% перекрытие сфер (меньше для раздельных сфер)
+    max_radius_voxels = 4  # Уменьшен для более частых сфер
+    overlap_factor = 0.08  # 8% перекрытие сфер (меньше для раздельных сфер)
     
     print(f"📐 Параметры:")
     print(f"   Разрешение: {resolution} вокселей")
@@ -255,7 +277,7 @@ def main():
     print(f"   Перекрытие сфер: {overlap_factor * 100}%\n")
     
     # Генерация
-    mask, maxima_coords, radii = create_cube_with_spheres(
+    mask, extrema_coords, radii = create_cube_with_spheres(
         shape=resolution,
         voxel_size=voxel_size,
         wall_thickness_mm=wall_thickness_mm,
