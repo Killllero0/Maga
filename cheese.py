@@ -120,14 +120,14 @@ def main():
     print("🔧 Генерация 3D-модели с шумом Перлина и внутренними пещерами...")
 
     resolution = (100, 100, 100)
-    scale = 25.0  # Уменьшен для более частых отверстий
+    scale = 15.0  # Ещё меньше для очень частых отверстий
     octaves = 6
     persistence = 0.5
     lacunarity = 2.0
-    threshold = 0.35  # Сlightly lowered
-    num_voids = 60
-    min_radius = 4
-    max_radius = 10
+    threshold = 0.3
+    num_voids = 80  # Увеличено количество сферических пустот
+    min_radius = 3
+    max_radius = 8
     voxel_size = 0.5
     wall_thickness_voxels = 4  # Толщина стенки в вокселях (4 voxels * 0.5mm = 2mm)
 
