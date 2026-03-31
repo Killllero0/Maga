@@ -106,93 +106,155 @@ def calculate_sphere_radii(extrema_coords, noise_map, shape, max_radius=8, overl
 
 def create_cube_with_spheres(shape, voxel_size=0.5, wall_thickness_mm=1.0, 
                              perlin_scale=30.0, max_radius_voxels=8, overlap_factor=0.15,
-                             fill_threshold=0.4):
+                             fill_threshold=0.4, max_attempts=10):
     """
     Создаёт куб с внутренними сферами на основе шума Перлина.
     Учитывает требования 3D печати (опоры для висящих частей).
     fill_threshold: порог заполнения материалом (0.3-0.4 = 30-40% материала, 60-70% пустоты)
+    max_attempts: максимальное количество попыток генерации связной структуры
     """
     wall_thickness_vox = int(wall_thickness_mm / voxel_size)
     
-    # Генерируем шум Перлина
-    print("📊 Генерация шума Перлина...")
-    noise_map = generate_perlin_noise_3d(shape, scale=perlin_scale)
-    
-    # Нормализуем шум
-    noise_norm = (noise_map - noise_map.min()) / (noise_map.max() - noise_map.min())
-    
-    # Находим локальные экстремумы (максимумы и минимумы) для центров сфер
-    print("🔍 Поиск локальных экстремумов (максимумы и минимумы)...")
-    extrema_coords, _ = find_local_extrema_3d(noise_map, threshold=0.3, min_distance=3, max_candidates=500)
-    
-    print(f"   Найдено {len(extrema_coords)} локальных экстремумов")
-    
-    # Рассчитываем радиусы сфер
-    print("📏 Расчёт радиусов сфер...")
-    radii = calculate_sphere_radii(extrema_coords, noise_map, shape, 
-                                   max_radius=max_radius_voxels, 
-                                   overlap_factor=overlap_factor)
-    
-    # Создаём базовую маску (сплошной куб)
-    mask = np.ones(shape, dtype=bool)
-    
-    # Создаём внешние стенки (обязательно 1мм минимум)
-    print(f"📦 Создание внешних стенок (толщина {wall_thickness_mm}мм)...")
-    if wall_thickness_vox > 0:
-        mask[wall_thickness_vox:-wall_thickness_vox,
-             wall_thickness_vox:-wall_thickness_vox,
-             wall_thickness_vox:-wall_thickness_vox] = False
-        mask = ~mask  # Инвертируем - теперь True это материал
-    
-    # Маска для внутренней области (где можно создавать сферы)
-    inner_region = np.zeros(shape, dtype=bool)
-    inner_region[wall_thickness_vox:-wall_thickness_vox,
+    for attempt in range(max_attempts):
+        print(f"\n{'='*50}")
+        print(f"🔄 Попытка генерации #{attempt + 1}/{max_attempts}")
+        print('='*50)
+        
+        # Генерируем шум Перлина с небольшим смещением для вариативности
+        noise_map = generate_perlin_noise_3d(shape, scale=perlin_scale, base=attempt * 100)
+        
+        # Нормализуем шум
+        noise_norm = (noise_map - noise_map.min()) / (noise_map.max() - noise_map.min())
+        
+        # Находим локальные экстремумы (максимумы и минимумы) для центров сфер
+        print("🔍 Поиск локальных экстремумов (максимумы и минимумы)...")
+        extrema_coords, _ = find_local_extrema_3d(noise_map, threshold=0.25, min_distance=4, max_candidates=600)
+        
+        if len(extrema_coords) < 50:
+            print(f"   ⚠️  Слишком мало экстремумов ({len(extrema_coords)}), пробуем снова...")
+            continue
+        
+        print(f"   Найдено {len(extrema_coords)} локальных экстремумов")
+        
+        # Рассчитываем радиусы сфер
+        print("📏 Расчёт радиусов сфер...")
+        radii = calculate_sphere_radii(extrema_coords, noise_map, shape, 
+                                       max_radius=max_radius_voxels, 
+                                       overlap_factor=overlap_factor)
+        
+        # Создаём базовую маску (сплошной куб)
+        mask = np.ones(shape, dtype=bool)
+        
+        # Создаём внешние стенки (обязательно 1мм минимум)
+        print(f"📦 Создание внешних стенок (толщина {wall_thickness_mm}мм)...")
+        if wall_thickness_vox > 0:
+            mask[wall_thickness_vox:-wall_thickness_vox,
                  wall_thickness_vox:-wall_thickness_vox,
-                 wall_thickness_vox:-wall_thickness_vox] = True
-    
-    # Создаём волны заполнения на основе шума Перлина
-    # Где шум выше порога - материал, ниже - пустота
-    print(f"🌊 Создание волн заполнения (порог {fill_threshold})...")
-    wave_mask = noise_norm > fill_threshold
-    
-    # Вырезаем сферы из материала
-    print("🔮 Генерация сфер...")
-    sphere_mask = np.zeros(shape, dtype=bool)
-    
-    # Толщина стенок сферы (в вокселях)
-    sphere_wall_thickness = 2  # ~1 мм
-    
-    for i, (center, radius) in enumerate(zip(extrema_coords, radii)):
-        x, y, z = center
-        xx, yy, zz = np.ogrid[:shape[0], :shape[1], :shape[2]]
-        dist = np.sqrt((xx - x)**2 + (yy - y)**2 + (zz - z)**2)
+                 wall_thickness_vox:-wall_thickness_vox] = False
+            mask = ~mask  # Инвертируем - теперь True это материал
         
-        # Создаём полую сферу (только оболочка)
-        inner_radius = max(radius - sphere_wall_thickness, 1)
-        sphere_shell = (dist <= radius) & (dist > inner_radius)
+        # Маска для внутренней области (где можно создавать сферы)
+        # Увеличиваем отступ чтобы сферы не затрагивали внешнюю поверхность
+        inner_margin = wall_thickness_vox + 2  # Дополнительный отступ 2 вокселя
+        inner_region = np.zeros(shape, dtype=bool)
+        inner_region[inner_margin:-inner_margin,
+                     inner_margin:-inner_margin,
+                     inner_margin:-inner_margin] = True
         
-        # Обрезаем сферу по внешней стенке
-        sphere_shell = sphere_shell & inner_region
+        # Создаём волны заполнения на основе шума Перлина
+        # Где шум выше порога - материал, ниже - пустота
+        print(f"🌊 Создание волн заполнения (порог {fill_threshold})...")
+        wave_mask = noise_norm > fill_threshold
         
-        sphere_mask = sphere_mask | sphere_shell
+        # Вырезаем сферы из материала
+        print("🔮 Генерация сфер...")
+        sphere_mask = np.zeros(shape, dtype=bool)
+        
+        # Толщина стенок сферы (в вокселях)
+        sphere_wall_thickness = 2  # ~1 мм
+        
+        for i, (center, radius) in enumerate(zip(extrema_coords, radii)):
+            x, y, z = center
+            xx, yy, zz = np.ogrid[:shape[0], :shape[1], :shape[2]]
+            dist = np.sqrt((xx - x)**2 + (yy - y)**2 + (zz - z)**2)
+            
+            # Создаём полую сферу (только оболочка)
+            inner_radius = max(radius - sphere_wall_thickness, 1)
+            sphere_shell = (dist <= radius) & (dist > inner_radius)
+            
+            # Обрезаем сферу по внутренней области (не затрагивая внешние стенки)
+            sphere_shell = sphere_shell & inner_region
+            
+            sphere_mask = sphere_mask | sphere_shell
+        
+        # Комбинируем: материал = стенки + (волны заполнения & ~сферы)
+        # Сферы вырезаются из волн заполнения
+        inner_material = wave_mask & inner_region & ~sphere_mask
+        
+        # Итоговая маска: внешние стенки + внутренний материал
+        full_mask = np.ones(shape, dtype=bool)
+        full_mask[inner_margin:-inner_margin,
+                  inner_margin:-inner_margin,
+                  inner_margin:-inner_margin] = inner_material[inner_margin:-inner_margin,
+                                                                inner_margin:-inner_margin,
+                                                                inner_margin:-inner_margin]
+        
+        # Добавляем опоры для 3D печати (Z-axis printing)
+        print("🏗️  Генерация опор для 3D печати...")
+        full_mask = add_support_structures(full_mask, voxel_size)
+        
+        # Проверяем связность внутренней структуры
+        print("🔗 Проверка связности внутренней структуры...")
+        is_connected, num_components = check_connectivity(full_mask, inner_region)
+        
+        if is_connected:
+            print(f"   ✅ Структура связная! (1 компонента)")
+            return full_mask, extrema_coords, radii
+        else:
+            print(f"   ⚠️  Структура несвязная ({num_components} компонент), пробуем снова...")
     
-    # Комбинируем: материал = стенки + (волны заполнения & ~сферы)
-    # Сферы вырезаются из волн заполнения
-    inner_material = wave_mask & inner_region & ~sphere_mask
+    print(f"\n❌ Не удалось создать связную структуру после {max_attempts} попыток")
+    print("   Возвращаем последнюю сгенерированную версию...")
+    return full_mask, extrema_coords, radii
+
+
+def check_connectivity(mask, inner_region):
+    """
+    Проверяет связность внутренней структуры (полостей).
+    Возвращает (is_connected, num_components).
+    """
+    from scipy.ndimage import label
     
-    # Итоговая маска: внешние стенки + внутренний материал
-    mask = (~mask if wall_thickness_vox > 0 else np.ones(shape, dtype=bool))
-    mask[wall_thickness_vox:-wall_thickness_vox,
-         wall_thickness_vox:-wall_thickness_vox,
-         wall_thickness_vox:-wall_thickness_vox] = inner_material[wall_thickness_vox:-wall_thickness_vox,
-                                                                   wall_thickness_vox:-wall_thickness_vox,
-                                                                   wall_thickness_vox:-wall_thickness_vox]
+    # Выделяем внутреннюю полость (пустоты внутри)
+    # Инвертируем маску чтобы получить пустоты
+    voids = ~mask & inner_region
     
-    # Добавляем опоры для 3D печати (Z-axis printing)
-    print("🏗️  Генерация опор для 3D печати...")
-    mask = add_support_structures(mask, voxel_size)
+    # Добавляем морфологическую дилатацию для соединения близких пустот
+    voids = ndimage.binary_dilation(voids, iterations=1)
     
-    return mask, extrema_coords, radii
+    # Считаем компоненты связности
+    labeled, num_features = label(voids)
+    
+    # Если есть пустоты, проверяем что основная компонента большая
+    if num_features == 0:
+        return True, 0  # Нет пустот - всё связно
+    
+    # Находим размер каждой компоненты
+    component_sizes = np.bincount(labeled.ravel())
+    
+    # Сортируем по размеру (исключая 0 фон)
+    sorted_sizes = sorted(component_sizes[1:], reverse=True)
+    
+    if len(sorted_sizes) == 0:
+        return True, 0
+    
+    # Если самая большая компонента > 50% от всех пустот - считаем связным
+    largest_ratio = sorted_sizes[0] / sum(sorted_sizes)
+    
+    # Также проверяем что компонент не слишком много
+    is_connected = (largest_ratio > 0.5) and (num_features < 100)
+    
+    return is_connected, num_features
 
 
 def add_support_structures(mask, voxel_size=0.5, min_overhang_angle=45, support_thickness_vox=2):
@@ -307,7 +369,8 @@ def main():
         perlin_scale=perlin_scale,
         max_radius_voxels=max_radius_voxels,
         overlap_factor=overlap_factor,
-        fill_threshold=fill_threshold
+        fill_threshold=fill_threshold,
+        max_attempts=15  # До 15 попыток для связной структуры
     )
     
     # Конвертация в меш
